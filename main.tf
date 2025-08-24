@@ -183,7 +183,11 @@ resource "aws_security_group" "ec2_sg" {
 # ----------------------
 resource "aws_key_pair" "main_key" {
   key_name   = "weekend-batch"
-  public_key = file("~/.ssh/id_rsa.pub") # Change to your key path
+  public_key = "dummy-key-for-imported-resource"
+  
+  lifecycle {
+    ignore_changes = [public_key]
+  }
 }
 
 # ----------------------
