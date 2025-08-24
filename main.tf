@@ -152,7 +152,63 @@ resource "aws_nat_gateway" "example" {
 
 
 # ----------------------
-# Security Group for EC2
+# Security Group for Bastion Host
+# ----------------------
+resource "aws_security_group" "bastion_sg" {
+  vpc_id = aws_vpc.mainvpc.id
+  name   = "bastion-sg"
+
+  ingress {
+    description = "SSH access to bastion"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # ⚠️ Restrict to your IP in production
+  }
+
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "bastion-sg"
+  }
+}
+
+# ----------------------
+# Security Group for Private Instances
+# ----------------------
+resource "aws_security_group" "private_sg" {
+  vpc_id = aws_vpc.mainvpc.id
+  name   = "private-sg"
+
+  ingress {
+    description = "SSH access from bastion"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    security_groups = [aws_security_group.bastion_sg.id]
+  }
+
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "private-sg"
+  }
+}
+
+# ----------------------
+# Security Group for Public Instances (legacy)
 # ----------------------
 resource "aws_security_group" "ec2_sg" {
   vpc_id = aws_vpc.mainvpc.id
@@ -191,6 +247,34 @@ resource "aws_key_pair" "main_key" {
 }
 
 # ----------------------
+# Bastion Host (Jump Server)
+# ----------------------
+resource "aws_instance" "bastion_host" {
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = "t2.micro"
+  subnet_id                   = aws_subnet.PublicSubnet.id
+  vpc_security_group_ids      = [aws_security_group.bastion_sg.id]
+  associate_public_ip_address = true
+  key_name                    = aws_key_pair.main_key.key_name
+
+  user_data = <<-EOF
+              #!/bin/bash
+              # Update system
+              apt-get update
+              apt-get install -y openssh-server
+              
+              # Configure SSH for better security
+              sed -i 's/#PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
+              sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+              systemctl restart ssh
+              EOF
+
+  tags = {
+    Name = "bastion-host"
+  }
+}
+
+# ----------------------
 # Public EC2 Instance
 # ----------------------
 resource "aws_instance" "public_ec2" {
@@ -213,7 +297,7 @@ resource "aws_instance" "private_ec2" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = "t2.micro"
   subnet_id                   = aws_subnet.privateSubnet.id
-  vpc_security_group_ids      = [aws_security_group.ec2_sg.id]
+  vpc_security_group_ids      = [aws_security_group.private_sg.id]
   associate_public_ip_address = false
   key_name                    = aws_key_pair.main_key.key_name
 
@@ -238,4 +322,37 @@ data "aws_ami" "ubuntu" {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+}
+
+# ----------------------
+# Outputs
+# ----------------------
+output "bastion_host_public_ip" {
+  description = "Public IP of the bastion host"
+  value       = aws_instance.bastion_host.public_ip
+}
+
+output "private_instance_private_ip" {
+  description = "Private IP of the private instance"
+  value       = aws_instance.private_ec2.private_ip
+}
+
+output "public_instance_public_ip" {
+  description = "Public IP of the public instance"
+  value       = aws_instance.public_ec2.public_ip
+}
+
+output "vpc_id" {
+  description = "VPC ID"
+  value       = aws_vpc.mainvpc.id
+}
+
+output "bastion_ssh_command" {
+  description = "SSH command to connect to bastion host"
+  value       = "ssh -i ~/.ssh/id_rsa ubuntu@${aws_instance.bastion_host.public_ip}"
+}
+
+output "private_instance_ssh_command" {
+  description = "SSH command to connect to private instance via bastion"
+  value       = "ssh -i ~/.ssh/id_rsa -J ubuntu@${aws_instance.bastion_host.public_ip} ubuntu@${aws_instance.private_ec2.private_ip}"
 }
