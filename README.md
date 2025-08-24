@@ -15,9 +15,10 @@ This project deploys the following AWS resources:
 - **Route Tables** for both public and private subnets
 
 ### Compute Resources
+- **Bastion Host** (Ubuntu 20.04) - Secure jump server in public subnet
 - **Public EC2 Instance** (Ubuntu 20.04) in public subnet
 - **Private EC2 Instance** (Ubuntu 20.04) in private subnet
-- **Security Group** with SSH access (port 22)
+- **Security Groups** with proper access controls
 - **Key Pair** for SSH authentication
 
 ### Architecture Diagram
@@ -35,9 +36,15 @@ Internet
 │  10.0.1.0/24    │    │  10.0.2.0/24    │
 │                 │    │                 │
 │ ┌─────────────┐ │    │ ┌─────────────┐ │
-│ │ Public EC2  │ │    │ │Private EC2  │ │
-│ │ Instance    │ │    │ │ Instance    │ │
+│ │  Bastion    │ │    │ │Private EC2  │ │
+│ │   Host      │ │    │ │ Instance    │ │
+│ │ (Jump Box)  │ │    │ │             │ │
 │ └─────────────┘ │    │ └─────────────┘ │
+│                 │    │                 │
+│ ┌─────────────┐ │    │                 │
+│ │ Public EC2  │ │    │                 │
+│ │ Instance    │ │    │                 │
+│ └─────────────┘ │    │                 │
 └─────────────────┘    └─────────────────┘
     │                        │
     ▼                        ▼
@@ -98,9 +105,27 @@ terraform apply
 ```
 
 ### 5. Access Your Instances
-After successful deployment, you can SSH to the public instance:
+After successful deployment, you can access your instances:
+
+**Connect to Bastion Host:**
+```bash
+ssh -i ~/.ssh/id_rsa ubuntu@<bastion-public-ip>
+```
+
+**Connect to Private Instance via Bastion:**
+```bash
+ssh -i ~/.ssh/id_rsa -J ubuntu@<bastion-public-ip> ubuntu@<private-instance-ip>
+```
+
+**Connect to Public Instance (direct):**
 ```bash
 ssh -i ~/.ssh/id_rsa ubuntu@<public-ip>
+```
+
+**Or use Terraform outputs for ready-to-use commands:**
+```bash
+terraform output bastion_ssh_command
+terraform output private_instance_ssh_command
 ```
 
 ## ⚙️ Configuration
@@ -130,18 +155,26 @@ private_subnet_cidr = "172.16.2.0/24"
 ## 🔒 Security Considerations
 
 ### Current Security Settings
-- **SSH Access**: Open to `0.0.0.0/0` (all IPs) - ⚠️ **For demo only**
-- **Security Group**: Allows SSH (port 22) inbound, all traffic outbound
+- **Bastion Host**: SSH access from `0.0.0.0/0` (all IPs) - ⚠️ **Restrict in production**
+- **Private Instances**: SSH access only from bastion host security group
+- **Public Instances**: SSH access from `0.0.0.0/0` (all IPs) - ⚠️ **For demo only**
+- **Security Groups**: Properly segregated with bastion-only access to private instances
 - **Private Instance**: No direct internet access (uses NAT Gateway)
 
 ### Recommended Security Improvements
-1. **Restrict SSH Access**: Limit SSH access to specific IP ranges
-2. **Additional Security Groups**: Create separate security groups for different application tiers
-3. **VPC Flow Logs**: Enable for network monitoring
-4. **CloudWatch Logs**: Enable for instance monitoring
+1. **Restrict Bastion Access**: Limit bastion SSH access to specific IP ranges
+2. **Bastion Host Hardening**: 
+   - Use AWS Systems Manager Session Manager instead of SSH
+   - Implement multi-factor authentication
+   - Regular security updates and monitoring
+3. **Additional Security Groups**: Create separate security groups for different application tiers
+4. **VPC Flow Logs**: Enable for network monitoring
+5. **CloudWatch Logs**: Enable for instance monitoring
+6. **Bastion Host Monitoring**: Set up alerts for failed login attempts
 
 ### Example Secure SSH Configuration
 ```hcl
+# Bastion Host Security Group
 ingress {
   description = "SSH access from office"
   from_port   = 22
@@ -149,15 +182,25 @@ ingress {
   protocol    = "tcp"
   cidr_blocks = ["YOUR_OFFICE_IP/32"]  # Replace with your IP
 }
+
+# Private Instance Security Group
+ingress {
+  description = "SSH access from bastion only"
+  from_port   = 22
+  to_port     = 22
+  protocol    = "tcp"
+  security_groups = [aws_security_group.bastion_sg.id]
+}
 ```
 
 ## 📊 Outputs
 
 The project provides the following outputs:
-- Public EC2 instance public IP
-- Private EC2 instance private IP
-- VPC ID
-- Subnet IDs
+- **Bastion Host**: Public IP and SSH command
+- **Private Instance**: Private IP and SSH command via bastion
+- **Public Instance**: Public IP
+- **VPC ID**: For reference and further configuration
+- **Ready-to-use SSH commands**: Copy-paste commands for easy access
 
 ## 🧹 Cleanup
 
@@ -188,15 +231,25 @@ Terraform-Project-02/
    - Ensure your SSH public key exists at `~/.ssh/id_rsa.pub`
    - Or update the `public_key_path` variable
 
-2. **AWS Credentials**
+2. **Cannot Connect to Private Instance**
+   - Verify you're connecting through the bastion host
+   - Check that the bastion host is running and accessible
+   - Ensure your SSH key is properly configured on both bastion and private instance
+
+3. **Bastion Host Connection Issues**
+   - Verify the bastion host security group allows SSH from your IP
+   - Check that the bastion host has finished initializing (user data script)
+   - Ensure the SSH service is running on the bastion host
+
+4. **AWS Credentials**
    - Verify AWS credentials are configured: `aws sts get-caller-identity`
    - Check IAM permissions for required services
 
-3. **NAT Gateway Costs**
+5. **NAT Gateway Costs**
    - NAT Gateways incur hourly charges (~$0.045/hour)
    - Consider using NAT Instance for cost optimization in non-production
 
-4. **AMI Not Found**
+6. **AMI Not Found**
    - The project uses Ubuntu 20.04 AMI
    - Ensure the AMI is available in your selected region
 
@@ -221,4 +274,22 @@ For issues and questions:
 
 ---
 
-**Note**: This is a demonstration project. For production use, implement proper security measures, backup strategies, and monitoring solutions.
+## 🏗️ Bastion Host Architecture
+
+This project implements a **bastion host (jump server)** pattern for secure access to private instances:
+
+### **How It Works:**
+1. **Bastion Host**: Single point of entry in the public subnet
+2. **Private Instances**: Only accessible through the bastion host
+3. **Security Groups**: Properly configured to allow bastion → private instance communication
+4. **SSH Proxy**: Use SSH jump host feature for seamless access
+
+### **Benefits:**
+- ✅ **Reduced Attack Surface**: Only one public entry point
+- ✅ **Centralized Access Control**: All access goes through bastion
+- ✅ **Audit Trail**: All access can be logged and monitored
+- ✅ **Easier Management**: Single point for security updates
+
+---
+
+**Note**: This is a demonstration project. For production use, implement proper security measures, backup strategies, and monitoring solutions. Consider using AWS Systems Manager Session Manager as an alternative to traditional bastion hosts.
